@@ -51,8 +51,7 @@ async def _remove_old_vectors(metadata: Dict[str, Any], scraped_url: str, cat: B
         metadata_to_find["chat_id"] = cat.id
         collection_name = str(VectorMemoryType.EPISODIC)
 
-    vmh = await cat.vector_memory_handler()
-    await vmh.delete_tenant_points(collection_name, metadata=metadata_to_find)
+    await cat.vector_memory_handler.delete_tenant_points(collection_name, metadata=metadata_to_find)
 
 
 async def process_scrapycat_command(user_message: str, cat: BotMixin, scheduled: bool = False) -> str:
