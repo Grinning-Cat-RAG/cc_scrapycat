@@ -15,16 +15,17 @@ def _get_job_id(cat: CheshireCat) -> str:
 # IMPORTANT: This function MUST live at a module level (not inside another function) so that APScheduler + Redis can
 # pickle/serialize it by its fully qualified import path.
 # All runtime context is passed explicitly via kwargs.
-async def _scheduled_scrapycat_job(lizard, user_message: str, agent_key: str, scheduled_job_id: str) -> str:
+async def _scheduled_scrapycat_job(user_message: str, agent_key: str, scheduled_job_id: str) -> str:
     """
     Module-level wrapper executed by APScheduler on its cron schedule.
 
     Args:
-        lizard (BillTheLizard): The global instance of BillTheLizard.
         user_message (str): The scraping command to run.
         agent_key (str): Key used to retrieve the correct CheshireCat instance.
         scheduled_job_id (str): The job id, used for distributed locking.
     """
+    lizard = BillTheLizard()
+
     white_rabbit = lizard.white_rabbit
     cheshire_cat = await lizard.get_cheshire_cat(agent_key)
 
@@ -38,11 +39,9 @@ async def _scheduled_scrapycat_job(lizard, user_message: str, agent_key: str, sc
         white_rabbit.release_lock(scheduled_job_id)
 
 
-async def _setup_scrapycat_schedule(cheshire_cat: CheshireCat, job_id: str) -> None:
+async def _setup_scrapycat_schedule(job_id: str, settings: Dict[str, Any], agent_key: str) -> None:
     """Setup or update the ScrapyCat scheduled cron job based on current settings."""
-    log.info(f"ScrapyCat Setting up ScrapyCat scheduled jobs after plugin toggle on agent '{cheshire_cat.agent_key}'")
-
-    settings = await cheshire_cat.mad_hatter.get_plugin().load_settings()
+    log.info(f"ScrapyCat Setting up ScrapyCat scheduled jobs after plugin toggle on agent '{agent_key}'")
 
     try:
         scheduled_command: str = settings.get("scheduled_command", "").strip()
@@ -54,11 +53,11 @@ async def _setup_scrapycat_schedule(cheshire_cat: CheshireCat, job_id: str) -> N
             log.debug("No scheduled ScrapyCat command configured, skipping job setup")
             return
 
-        lizard = cheshire_cat.lizard
+        lizard = BillTheLizard()
 
         # Avoid adding the same job twice
         if lizard.white_rabbit.get_job(job_id):
-            log.debug(f"Job '{job_id}' already scheduled for CheshireCat '{cheshire_cat.agent_key}'")
+            log.debug(f"Job '{job_id}' already scheduled for CheshireCat '{agent_key}'")
             return
 
         lizard.white_rabbit.schedule_cron_job(
@@ -66,9 +65,8 @@ async def _setup_scrapycat_schedule(cheshire_cat: CheshireCat, job_id: str) -> N
             job_id=job_id,
             hour=schedule_hour,
             minute=schedule_minute,
-            lizard=lizard,
             user_message=scheduled_command,
-            agent_key=cheshire_cat.agent_key,
+            agent_key=agent_key,
             scheduled_job_id=job_id,
         )
 
@@ -99,7 +97,9 @@ def _remove_scrapycat_schedule(job_id: str) -> None:
 @hook(priority=0)
 async def after_plugin_settings_update(plugin_id: str, settings: Dict[str, Any], cat: CheshireCat) -> None:
     """Hook called when plugin settings are updated — replaces the cron job with the new config."""
-    if plugin_id != cat.mad_hatter.get_plugin().id:
+    this_plugin = cat.mad_hatter.get_plugin()
+
+    if plugin_id != this_plugin.id:
         return
 
     job_id = _get_job_id(cat)
@@ -108,7 +108,9 @@ async def after_plugin_settings_update(plugin_id: str, settings: Dict[str, Any],
     _remove_scrapycat_schedule(job_id)
 
     # Schedule a fresh job with the updated settings
-    await _setup_scrapycat_schedule(cat, job_id)
+    settings = await this_plugin.load_settings()
+
+    await _setup_scrapycat_schedule(job_id, settings, cat.agent_key)
 
 
 @hook(priority=0)
@@ -123,7 +125,7 @@ async def after_plugin_toggling_on_agent(plugin_id: str, cat: CheshireCat) -> No
         settings: Dict[str, Any] = await this_plugin.load_settings()
 
         crawl4ai_setup_command(settings)
-        await _setup_scrapycat_schedule(cat, job_id)
+        await _setup_scrapycat_schedule(job_id, settings, cat.agent_key)
         return
 
     _remove_scrapycat_schedule(job_id)
