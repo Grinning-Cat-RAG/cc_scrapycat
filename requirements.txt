@@ -1,3 +1,0 @@
-bs64
-crawl4ai
-crawl4ai[pdf]
