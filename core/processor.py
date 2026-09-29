@@ -14,7 +14,7 @@ import time
 from .context import ScrapyCatContext
 from .crawler import crawler
 from ..utils.url_utils import clean_url, normalize_url_with_protocol, normalize_domain, validate_url
-from ..utils.robots import load_robots_txt
+from ..utils.robots import load_robots_txt, crawl_client
 
 
 async def _crawl4i(url: str) -> str:
@@ -157,8 +157,9 @@ async def process_scrapycat_command(user_message: str, cat: BotMixin, scheduled:
     # Preload robots.txt for all starting domains if robots.txt following is enabled
     if ctx.follow_robots_txt:
         all_domains = ctx.root_domains.union(ctx.allowed_domains)
-        for domain in all_domains:
-            load_robots_txt(ctx, domain)
+        async with crawl_client(ctx) as client:
+            for domain in all_domains:
+                await load_robots_txt(ctx, domain, client)
         log.info(f"Robots.txt preloaded for {len(all_domains)} domains")
 
     log.info(

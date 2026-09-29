@@ -8,17 +8,21 @@ from .core.processor import process_scrapycat_command
 @hook(priority=9)
 async def lizard_notify_plugin_installation(plugin_id: str, plugin_path: str, lizard: BillTheLizard):
     settings = await lizard.mad_hatter.get_plugin().load_settings()
-    crawl4ai_setup_command(settings)
+    await crawl4ai_setup_command(settings)
 
 
 @hook(priority=9)
 async def after_lizard_bootstrap(lizard: BillTheLizard):
     settings = await lizard.mad_hatter.get_plugin().load_settings()
-    crawl4ai_setup_command(settings)
+    await crawl4ai_setup_command(settings)
 
 
 @hook(priority=9)
 async def agent_fast_reply(cat: StrayCat) -> AgenticWorkflowOutput | None:
+    # a message blocked by guard-plugin is not worked on: its reply is the block
+    if getattr(cat.working_memory, "guard_blocked", None) == id(cat.working_memory.user_message):
+        return None
+
     user_message: str = cat.working_memory.user_message.text
 
     if not user_message.startswith("@scrapycat"):
@@ -31,7 +35,7 @@ async def agent_fast_reply(cat: StrayCat) -> AgenticWorkflowOutput | None:
         return None
 
     # Process the scrapycat command using the extracted function
-    crawl4ai_setup_command(settings, cat=cat)
+    await crawl4ai_setup_command(settings, cat=cat)
     result = await process_scrapycat_command(user_message=user_message, cat=cat)
     return AgenticWorkflowOutput(output=result)
 

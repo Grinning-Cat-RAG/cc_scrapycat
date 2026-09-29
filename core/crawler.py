@@ -1,10 +1,10 @@
 import asyncio
 import subprocess
 import time
-from pathlib import Path
 from typing import List, Tuple, Dict
 import urllib.parse
 import threading
+import httpx
 from bs4 import BeautifulSoup
 from cat import StrayCat
 from cat.log import log
@@ -12,7 +12,7 @@ from cat.mixins import BotMixin
 
 from .context import ScrapyCatContext
 from ..utils.url_utils import normalize_domain
-from ..utils.robots import is_url_allowed_by_robots, get_thread_session
+from ..utils.robots import is_url_allowed_by_robots, crawl_client
 
 
 def _extract_valid_urls(urls: List[str], page: str, ctx: ScrapyCatContext) -> List[str]:
@@ -78,7 +78,9 @@ def _extract_valid_urls(urls: List[str], page: str, ctx: ScrapyCatContext) -> Li
     return valid_urls
 
 
-async def _crawl_page(ctx: ScrapyCatContext, cat: BotMixin, page: str, depth: int) -> List[Tuple[str, int]]:
+async def _crawl_page(
+    ctx: ScrapyCatContext, cat: BotMixin, page: str, depth: int, client: httpx.AsyncClient,
+) -> List[Tuple[str, int]]:
     """Thread-safe page crawling function - now stores content for later sequential ingestion"""
     with ctx.visited_lock:
         if page in ctx.visited_pages:
@@ -86,15 +88,14 @@ async def _crawl_page(ctx: ScrapyCatContext, cat: BotMixin, page: str, depth: in
         ctx.visited_pages.add(page)
     
     # Check robots.txt compliance for this page
-    if not is_url_allowed_by_robots(ctx, page):
+    if not await is_url_allowed_by_robots(ctx, page, client):
         log.info(f"Page blocked by robots.txt, skipping: {page}")
         return []
     
     new_urls: List[Tuple[str, int]] = []
     try:
-        # Use thread-local session for fast parallel requests
-        session = get_thread_session(ctx.user_agent)
-        response = session.get(page, timeout=ctx.page_timeout)
+        # asynchronous: the other pages, and every other request of the instance, go on while the page downloads
+        response = await client.get(page)
         response_text = response.text
 
         soup: BeautifulSoup = BeautifulSoup(response_text, "html.parser")
@@ -187,7 +188,7 @@ async def crawler(ctx: ScrapyCatContext, cat: BotMixin, start_urls: list[str]) -
             try:
                 # Add a timeout to the specific page crawl
                 new_links = await asyncio.wait_for(
-                    _crawl_page(ctx, cat, url, depth),
+                    _crawl_page(ctx, cat, url, depth, client),
                     timeout=ctx.page_timeout,
                 )
                 # Process results and schedule new tasks
@@ -209,7 +210,8 @@ async def crawler(ctx: ScrapyCatContext, cat: BotMixin, start_urls: list[str]) -
     # (Simplified because we don't need locks in a single-threaded event loop)
     pending_tasks = set()
     try:
-        async with asyncio.TaskGroup() as tg:
+        # one client per crawl, with the user agent and the timeout of the agent (after the before_scraping hook)
+        async with crawl_client(ctx) as client, asyncio.TaskGroup() as tg:
             for start_url in start_urls:
                 pending_tasks.add(start_url)
                 tg.create_task(throttled_crawl(start_url, 0))
@@ -221,41 +223,66 @@ async def crawler(ctx: ScrapyCatContext, cat: BotMixin, start_urls: list[str]) -
     log.info(f"Crawl complete. Visited: {len(ctx.visited_pages)}")
 
 
-def crawl4ai_setup_command(settings: Dict, cat: BotMixin | None = None) -> None:
-    can_notify = cat and isinstance(cat, StrayCat)
+# The setup installs the browser of Crawl4AI (playwright) on the machine of the instance: whether it is done is a state of
+# the process (another instance, or this one after a restart, has to install it again), never a file in the working
+# directory. One setup at a time per event loop: the concurrent requests wait for it, then find it done.
+SETUP_COMMANDS = (
+    ["uv", "run", "crawl4ai-setup"],
+    ["uv", "run", "playwright", "install"],
+    ["uv", "run", "playwright", "install-deps"],
+)
+_setup = {"done": False, "loop": None, "lock": None}
+
+
+def _setup_lock() -> asyncio.Lock:
+    loop = asyncio.get_running_loop()
+    if _setup["loop"] is not loop:
+        _setup["loop"], _setup["lock"] = loop, asyncio.Lock()
+    return _setup["lock"]
+
+
+async def _run_setup_command(command: List[str]) -> None:
+    """Run a setup command as an asynchronous subprocess: the event loop serves the other requests meanwhile."""
+    process = await asyncio.create_subprocess_exec(*command)
+    returncode = await process.wait()
+    if returncode != 0:
+        raise subprocess.CalledProcessError(returncode, command)
+
+
+async def crawl4ai_setup_command(settings: Dict, cat: BotMixin | None = None) -> None:
+    can_notify = isinstance(cat, StrayCat)
 
     # Check if crawl4ai is enabled in settings
     if not settings.get("use_crawl4ai", False):
         return
 
-    # Check if crawl4ai was already setup
-    filepath = Path(".crawl4ai")
-    if filepath.exists():
-        return
+    async with _setup_lock():
+        # Check if crawl4ai was already setup by this process
+        if _setup["done"]:
+            return
 
-    if can_notify:
-        cat.notifier.send_notification("Running crawl4ai setup...")
+        if can_notify:
+            await cat.notifier.send_notification("Running crawl4ai setup...")
 
-    # Setup crawl4ai dependencies and configuration
-    try:
-        # Runs the setup command just like in the shell
-        subprocess.run(["uv", "run", "crawl4ai-setup"], check=True)
-        subprocess.run(["uv", "run", "playwright", "install"], check=True)
-        subprocess.run(["uv", "run", "playwright", "install-deps"], check=True)
+        # Setup crawl4ai dependencies and configuration
+        try:
+            for command in SETUP_COMMANDS:
+                await _run_setup_command(command)
+        except subprocess.CalledProcessError as e:
+            message = f"Error during Crawl4AI setup: {e}"
+            if can_notify:
+                await cat.notifier.send_error(message)
+            log.error(message)
+            return
+        except FileNotFoundError:
+            message = "crawl4ai-setup or playwright command not found. Make sure crawl4ai is installed."
+            if can_notify:
+                await cat.notifier.send_error(message)
+            log.error(message)
+            return
 
+        _setup["done"] = True
         message = "Crawl4AI setup completed successfully."
         if can_notify:
-            cat.notifier.send_notification(message)
+            await cat.notifier.send_notification(message)
         log.info(message)
-
-        Path.write_text(filepath, "")  # Create an empty .crawl4ai file to indicate setup is done
-    except subprocess.CalledProcessError as e:
-        message = f"Error during Crawl4AI setup: {e}"
-        if can_notify:
-            cat.notifier.send_error(message)
-        log.error(message)
-    except FileNotFoundError:
-        message = "crawl4ai-setup or playwright command not found. Make sure crawl4ai is installed."
-        if can_notify:
-            cat.notifier.send_error(message)
-        log.error(message)

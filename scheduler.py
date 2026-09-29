@@ -1,4 +1,4 @@
-import time
+import asyncio
 from typing import Dict, Any
 from cat.log import log
 from cat import hook, CheshireCat, BillTheLizard
@@ -6,6 +6,9 @@ from cat.core_plugins.white_rabbit.white_rabbit import JobStatus
 
 from .core.crawler import crawl4ai_setup_command
 from .core.processor import process_scrapycat_command
+
+# while the job of the agent runs, its replacement checks it again after this many seconds
+JOB_POLL_SECONDS = 5
 
 
 def _get_job_id(cat: CheshireCat) -> str:
@@ -75,7 +78,7 @@ async def _setup_scrapycat_schedule(job_id: str, settings: Dict[str, Any], agent
         log.error(f"Failed to setup scheduled ScrapyCat job: {str(e)}")
 
 
-def _remove_scrapycat_schedule(job_id: str) -> None:
+async def _remove_scrapycat_schedule(job_id: str) -> None:
     log.info("ScrapyCat Plugin: removing scheduled job.")
     lizard = BillTheLizard()
 
@@ -91,7 +94,8 @@ def _remove_scrapycat_schedule(job_id: str) -> None:
             return
 
         log.debug(f"ScrapyCat job '{job_id}' is still running, waiting before replacing...")
-        time.sleep(5)
+        # asynchronous: the event loop serves the other requests while the job runs
+        await asyncio.sleep(JOB_POLL_SECONDS)
 
 
 @hook(priority=0)
@@ -105,7 +109,7 @@ async def after_plugin_settings_update(plugin_id: str, settings: Dict[str, Any],
     job_id = _get_job_id(cat)
 
     # Remove the existing job
-    _remove_scrapycat_schedule(job_id)
+    await _remove_scrapycat_schedule(job_id)
 
     # Schedule a fresh job with the updated settings
     settings = await this_plugin.load_settings()
@@ -124,8 +128,8 @@ async def after_plugin_toggling_on_agent(plugin_id: str, cat: CheshireCat) -> No
     if plugin_id in cat.mad_hatter.active_plugins:
         settings: Dict[str, Any] = await this_plugin.load_settings()
 
-        crawl4ai_setup_command(settings)
+        await crawl4ai_setup_command(settings)
         await _setup_scrapycat_schedule(job_id, settings, cat.agent_key)
         return
 
-    _remove_scrapycat_schedule(job_id)
+    await _remove_scrapycat_schedule(job_id)
