@@ -4,8 +4,8 @@ the crawls of the other agents.
 
 Run from the core root: ``python -m pytest cat/plugins/cc_scrapycat/tests``.
 
-The Cat imports every ``.py`` file of the plugin, tests included: at import time this module needs only the stdlib,
-the Cat, httpx and the plugin are loaded in ``setUpClass`` (and in the fakes, when they run).
+The Cat, httpx and the plugin are loaded in ``setUpClass`` (and in the fakes, when they run), the plugin through the
+plugin loader of the Cat (which skips the tests of the plugin): at import time this module needs only the stdlib.
 """
 import asyncio
 import sys
@@ -22,9 +22,8 @@ CRAWLER = ROBOTS = PROCESSOR = CONTEXT = None
 
 
 def _load():
-    """Loads the plugin once, from the test classes: the Cat imports the modules of the plugin (tests included) again
-    when it loads it, so ``sys.modules`` (where unittest looks for ``setUpModule``) may hold another copy of this module:
-    the globals are set here, in the module of the test classes."""
+    """Loads the plugin once, from the test classes, through the plugin loader of the Cat: the modules of the plugin
+    are then taken from ``sys.modules``, under the package name the loader gives them."""
     global CRAWLER, ROBOTS, PROCESSOR, CONTEXT
     if str(PLUGIN_DIR) in LOADED:
         return
