@@ -160,3 +160,8 @@ cython_debug/
 .idea/
 
 settings.json
+
+# local agent tooling
+.opencode
+.omo
+AGENTS.md
