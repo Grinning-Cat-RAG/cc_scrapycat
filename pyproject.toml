@@ -5,4 +5,7 @@ requires-python = ">=3.11,<3.14"
 dependencies = [
     "bs64",
     "crawl4ai[pdf]",
+    "chardet>=5.2.0,<6",
+    "huggingface-hub<1.0",
+    "tokenizers<0.23",
 ]
