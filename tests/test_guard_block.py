@@ -1,4 +1,8 @@
-"""A message blocked by guard-plugin is not worked on: its reply is the block."""
+"""A message that is not a scrapycat command is not worked on: the fast reply leaves it to the Cat.
+
+The guard marker on the working memory was produced by no plugin in the fleet, so the check was removed: obsolete
+behavior, not a regression.
+"""
 import asyncio
 import unittest
 from pathlib import Path
@@ -32,11 +36,10 @@ class GuardBlockTest(unittest.TestCase):
     def setUpClass(cls):
         _load()
 
-    def test_a_blocked_message_is_not_worked_on(self):
-        # regression: the plugin did its work (commands, settings, network) on a message that guard-plugin blocked
+    def test_a_message_that_is_not_a_command_is_not_worked_on(self):
+        # the guard marker was produced by no plugin in the fleet: the check was removed (obsolete behavior, not a regression)
         cat = mock.MagicMock()
-        cat.working_memory = SimpleNamespace(user_message=SimpleNamespace(text="@scrapycat https://example.com"), context_memories=[])
-        cat.working_memory.guard_blocked = id(cat.working_memory.user_message)
+        cat.working_memory = SimpleNamespace(user_message=SimpleNamespace(text="hello there"), context_memories=[])
         self.assertIsNone(asyncio.run(FAST_REPLY(cat)))
         self.assertEqual(cat.mock_calls, [], "nothing of the Cat is used")
 
